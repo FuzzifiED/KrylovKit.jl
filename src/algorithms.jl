@@ -126,6 +126,75 @@ function Lanczos(;
     return Lanczos(orth, krylovdim, maxiter, tol, eager, verbosity)
 end
 
+# Hard-locking variant of `Lanczos`, for computing many eigenvalues with a small
+# working subspace
+"""
+    LockedLanczos(; krylovdim=KrylovDefaults.krylovdim[],
+                  maxiter=KrylovDefaults.maxiter[],
+                  tol=KrylovDefaults.tol[],
+                  tol_lock=tol / 1000,
+                  orth=KrylovDefaults.orth,
+                  eager=false,
+                  verbosity=KrylovDefaults.verbosity[])
+
+Represents a hard-locking (deflated) variant of the [`Lanczos`](@ref) algorithm, for use in
+`eigsolve` with a real symmetric or complex Hermitian linear operator. Whenever a Ritz pair
+has converged to within `tol_lock`, it is *locked*: it is removed from the active Krylov
+subspace, but retained in the set against which every subsequent Krylov vector is
+orthogonalized, so that the iteration effectively continues on the deflated operator
+`P * A * P` with `P = I - L * L'` the projector complementary to the locked basis `L`.
+
+As a consequence, `krylovdim` bounds the size of the *active* Krylov subspace only, and is
+therefore no longer required to exceed the number of requested eigenvalues `howmany`. This
+is the main reason to prefer `LockedLanczos` over `Lanczos`: it allows `howmany >>
+krylovdim`. Note that the total number of vectors held in memory is `howmany + krylovdim`,
+since the locked vectors have to be stored, and that the cost of orthogonalizing against
+the locked basis grows linearly with the number of locked vectors.
+
+Locking is irreversible, so `tol_lock` should be (significantly) smaller than the
+convergence tolerance `tol`; the default is `tol / 1000`. The value actually used is
+clamped from below by an estimate of the attainable residual floor, so that a `tol_lock`
+that can never be reached in floating point does not stall the iteration, and from above by
+`tol`. At most `howmany - 1` eigenpairs are locked, so that the active subspace always
+contributes at least one Ritz pair to the result.
+
+The remaining keyword arguments have the same meaning as for [`Lanczos`](@ref).
+
+!!! warning
+
+    A Ritz pair whose residual is below `tol_lock` still has an eigenvector error of order
+    `tol_lock / δ`, with `δ` the gap to the rest of the spectrum. Locking a pair belonging
+    to a tight cluster therefore permanently removes a slightly wrong direction, which
+    limits the accuracy attainable for all remaining eigenpairs. Choose `tol_lock` with the
+    smallest expected gap in mind.
+
+See also: [`Lanczos`](@ref), [`BlockLanczos`](@ref), [`eigsolve`](@ref),
+[`Orthogonalizer`](@ref)
+"""
+struct LockedLanczos{O <: Orthogonalizer, S <: Real} <: KrylovAlgorithm
+    orth::O
+    krylovdim::Int
+    maxiter::Int
+    tol::S
+    tol_lock::S
+    eager::Bool
+    verbosity::Int
+end
+function LockedLanczos(;
+        krylovdim::Int = KrylovDefaults.krylovdim[],
+        maxiter::Int = KrylovDefaults.maxiter[],
+        tol::Real = KrylovDefaults.tol[],
+        tol_lock::Real = tol / 1000,
+        orth::Orthogonalizer = KrylovDefaults.orth,
+        eager::Bool = false,
+        verbosity::Int = KrylovDefaults.verbosity[]
+    )
+    return LockedLanczos(
+        orth, krylovdim, maxiter, promote(tol, tol_lock)..., eager,
+        verbosity
+    )
+end
+
 """
     BlockLanczos(; krylovdim=KrylovDefaults.blockkrylovdim[],
             maxiter=KrylovDefaults.maxiter[],

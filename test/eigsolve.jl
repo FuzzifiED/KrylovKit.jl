@@ -135,6 +135,201 @@ end
     end
 end
 
+@testset "LockedLanczos - eigsolve full ($mode)" for mode in (:vector, :inplace, :outplace)
+    scalartypes = mode === :vector ? (Float32, Float64, ComplexF32, ComplexF64) :
+        (ComplexF64,)
+    orths = mode === :vector ? (cgs2, mgs2, cgsr, mgsr) : (mgsr,)
+    @testset for T in scalartypes
+        @testset for orth in orths
+            A = rand(T, (n, n)) .- one(T) / 2
+            A = (A + A') / 2
+            v = rand(T, (n,))
+            n1 = div(n, 2)
+            n2 = n - n1
+
+            alg = LockedLanczos(;
+                orth = orth, krylovdim = n, maxiter = 1, tol = tolerance(T)
+            )
+            D1, V1, info1 = @constinferred eigsolve(
+                wrapop(A, Val(mode)),
+                wrapvec(v, Val(mode)), n1, :SR, alg
+            )
+            alg = LockedLanczos(;
+                orth = orth, krylovdim = 2 * n, maxiter = 1, tol = tolerance(T)
+            )
+            D2, V2, info2 = @constinferred eigsolve(
+                wrapop(A, Val(mode)),
+                wrapvec(v, Val(mode)), n2, :LR, alg
+            )
+            @test vcat(D1[1:n1], reverse(D2[1:n2])) ≊ eigvals(A)
+
+            U1 = stack(unwrapvec, V1)
+            U2 = stack(unwrapvec, V2)
+            @test U1' * U1 ≈ I
+            @test U2' * U2 ≈ I
+
+            @test A * U1 ≈ U1 * Diagonal(D1)
+            @test A * U2 ≈ U2 * Diagonal(D2)
+        end
+    end
+end
+
+@testset "LockedLanczos - eigsolve iteratively ($mode)" for mode in
+    (:vector, :inplace, :outplace)
+    scalartypes = mode === :vector ? (Float32, Float64, ComplexF32, ComplexF64) :
+        (ComplexF64,)
+    orths = mode === :vector ? (cgs2, mgs2, cgsr, mgsr) : (mgsr,)
+    @testset for T in scalartypes
+        @testset for orth in orths
+            A = rand(T, (N, N)) .- one(T) / 2
+            A = (A + A') / 2
+            v = rand(T, (N,))
+            alg = LockedLanczos(;
+                orth = orth, krylovdim = 2 * n, maxiter = 10,
+                tol = tolerance(T), eager = true, verbosity = SILENT_LEVEL
+            )
+            D1, V1, info1 = @constinferred eigsolve(
+                wrapop(A, Val(mode)),
+                wrapvec(v, Val(mode)), n, :SR, alg
+            )
+            D2, V2, info2 = eigsolve(
+                wrapop(A, Val(mode)), wrapvec(v, Val(mode)), n, :LR,
+                alg
+            )
+
+            l1 = info1.converged
+            l2 = info2.converged
+            @test l1 > 0
+            @test l2 > 0
+            @test D1[1:l1] ≈ eigvals(A)[1:l1]
+            @test D2[1:l2] ≈ eigvals(A)[N:-1:(N - l2 + 1)]
+
+            U1 = stack(unwrapvec, V1)
+            U2 = stack(unwrapvec, V2)
+            @test U1' * U1 ≈ I
+            @test U2' * U2 ≈ I
+
+            R1 = stack(unwrapvec, info1.residual)
+            R2 = stack(unwrapvec, info2.residual)
+            @test A * U1 ≈ U1 * Diagonal(D1) + R1
+            @test A * U2 ≈ U2 * Diagonal(D2) + R2
+        end
+    end
+end
+
+# The reason for `LockedLanczos` to exist: converged Ritz vectors are locked away from the
+# active Krylov subspace, so that `howmany` is no longer bounded by `krylovdim`.
+@testset "LockedLanczos - howmany exceeding krylovdim ($T)" for T in
+    (Float32, Float64, ComplexF32, ComplexF64)
+    A = rand(T, (N, N)) .- one(T) / 2
+    A = (A + A') / 2
+    v = rand(T, (N,))
+    howmany = 3 * n
+    krylovdim = 2 * n
+    @test howmany > krylovdim
+
+    alg = LockedLanczos(; krylovdim = krylovdim, maxiter = 500, tol = tolerance(T))
+    D, V, info = @constinferred eigsolve(A, v, howmany, :SR, alg)
+    l = info.converged
+    @test l >= howmany
+    @test D[1:l] ≈ eigvals(A)[1:l]
+
+    U = stack(V)
+    @test U' * U ≈ I
+    R = stack(info.residual)
+    @test A * U ≈ U * Diagonal(D) + R
+    # locked pairs report the residual they had when they were locked; verify that this is
+    # still a faithful residual with respect to the undeflated operator
+    @test all(norm(A * V[i] - D[i] * V[i]) <= 10 * tolerance(T) for i in 1:l)
+
+    # plain `Lanczos` refuses this problem
+    @test_throws ErrorException eigsolve(
+        A, v, howmany, :SR,
+        Lanczos(; krylovdim = krylovdim, tol = tolerance(T))
+    )
+end
+
+@testset "LockedLanczos - agreement with Lanczos ($T)" for T in (Float64, ComplexF64)
+    A = rand(T, (N, N)) .- one(T) / 2
+    A = (A + A') / 2
+    v = rand(T, (N,))
+    for which in (:SR, :LR, :LM, EigSorter(abs; rev = false))
+        alg1 = Lanczos(; krylovdim = 3 * n, maxiter = 100, tol = tolerance(T))
+        alg2 = LockedLanczos(; krylovdim = 3 * n, maxiter = 100, tol = tolerance(T))
+        D1, V1, info1 = eigsolve(A, v, n, which, alg1)
+        D2, V2, info2 = eigsolve(A, v, n, which, alg2)
+        @test info1.converged >= n
+        @test info2.converged >= n
+        @test D1[1:n] ≈ D2[1:n]
+    end
+end
+
+@testset "LockedLanczos - tol_lock ($T)" for T in (Float32, Float64, ComplexF32, ComplexF64)
+    A = rand(T, (N, N)) .- one(T) / 2
+    A = (A + A') / 2
+    v = rand(T, (N,))
+    howmany = 5 * div(n, 2)
+    tol = tolerance(T)
+    # `tol_lock == tol` locks as eagerly as possible, `eps^2` is far below the attainable
+    # residual floor and has to be clamped from below or the iteration would never lock
+    @testset for tol_lock in (tol, tol / 1000, eps(real(T))^2)
+        alg = LockedLanczos(;
+            krylovdim = 2 * n, maxiter = 500, tol = tol,
+            tol_lock = tol_lock
+        )
+        D, V, info = eigsolve(A, v, howmany, :SR, alg)
+        l = info.converged
+        @test l >= howmany
+        @test D[1:l] ≈ eigvals(A)[1:l]
+        @test all(norm(A * V[i] - D[i] * V[i]) <= 10 * tol for i in 1:l)
+    end
+    # `tol_lock` is clamped from above by `tol`, so a loose value behaves like `tol`
+    alg1 = LockedLanczos(; krylovdim = 2 * n, maxiter = 500, tol = tol, tol_lock = tol)
+    alg2 = LockedLanczos(; krylovdim = 2 * n, maxiter = 500, tol = tol, tol_lock = 100 * tol)
+    D1, = eigsolve(A, v, howmany, :SR, alg1)
+    D2, = eigsolve(A, v, howmany, :SR, alg2)
+    @test D1[1:howmany] ≈ D2[1:howmany]
+end
+
+@testset "LockedLanczos - verbosity and argument checking" begin
+    T = ComplexF64
+    A = rand(T, (n, n)) .- one(T) / 2
+    A = (A + A') / 2
+    v = rand(T, (n,))
+    n1 = div(n, 2)
+
+    @test_throws ErrorException eigsolve(A, v, 1, :SR, LockedLanczos(; krylovdim = 1))
+
+    alg = LockedLanczos(;
+        krylovdim = n, maxiter = 1, tol = tolerance(T),
+        verbosity = SILENT_LEVEL
+    )
+    @test_logs eigsolve(A, v, n1, :SR, alg)
+    alg = LockedLanczos(;
+        krylovdim = n, maxiter = 1, tol = tolerance(T),
+        verbosity = WARN_LEVEL
+    )
+    @test_logs eigsolve(A, v, n1, :SR, alg)
+    alg = LockedLanczos(;
+        krylovdim = n, maxiter = 1, tol = tolerance(T),
+        verbosity = STARTSTOP_LEVEL
+    )
+    @test_logs (:info,) eigsolve(A, v, n1, :SR, alg)
+    alg = LockedLanczos(;
+        krylovdim = n1 + 1, maxiter = 1, tol = tolerance(T),
+        verbosity = WARN_LEVEL
+    )
+    @test_logs (:warn,) eigsolve(A, v, n1, :SR, alg)
+    alg = LockedLanczos(;
+        krylovdim = n1, maxiter = 3, tol = tolerance(T),
+        verbosity = EACHITERATION_LEVEL
+    )
+    @test_logs(
+        (:info,), (:info,), (:info,), (:warn,),
+        eigsolve(A, v, 1, :SR, alg)
+    )
+end
+
 @testset "Arnoldi - eigsolve full ($mode)" for mode in (:vector, :inplace, :outplace)
     scalartypes = mode === :vector ? (Float32, Float64, ComplexF32, ComplexF64) :
         (ComplexF64,)

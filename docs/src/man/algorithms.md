@@ -14,6 +14,7 @@ ModifiedGramSchmidtIR
 ## General Krylov algorithms
 ```@docs
 Lanczos
+LockedLanczos
 BlockLanczos
 Arnoldi
 BiArnoldi

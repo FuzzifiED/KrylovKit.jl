@@ -37,7 +37,8 @@ export initialize, initialize!, expand!, shrink!
 export ClassicalGramSchmidt, ClassicalGramSchmidt2, ClassicalGramSchmidtIR
 export ModifiedGramSchmidt, ModifiedGramSchmidt2, ModifiedGramSchmidtIR
 export LanczosIterator, BlockLanczosIterator, ArnoldiIterator, GKLIterator, BiArnoldiIterator
-export CG, GMRES, BiCGStab, Lanczos, BlockLanczos, Arnoldi, GKL, GolubYe, LSMR, BiArnoldi
+export CG, GMRES, BiCGStab, Lanczos, LockedLanczos, BlockLanczos, Arnoldi, GKL, GolubYe,
+    LSMR, BiArnoldi
 export KrylovDefaults, EigSorter
 export RecursiveVec, InnerProductVec, Block
 
@@ -268,6 +269,7 @@ include("lssolve/lsmr.jl")
 # eigsolve and svdsolve
 include("eigsolve/eigsolve.jl")
 include("eigsolve/lanczos.jl")
+include("eigsolve/lockedlanczos.jl")
 include("eigsolve/blocklanczos.jl")
 include("eigsolve/arnoldi.jl")
 include("eigsolve/biarnoldi.jl")
